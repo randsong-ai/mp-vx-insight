@@ -3,7 +3,7 @@
   "description": "__MSG_extensionDesc__",
   "version": "1.1.0",
   "manifest_version": 3,
-  "homepage_url": "https://github.com/pudongping/mp-vx-insight",
+  "homepage_url": "http://ruiting.tech",
   "default_locale": "zh_CN",
   "icons": {
     "48": "icon128.png"
@@ -16,12 +16,14 @@
       "128": "icon128.png"
     },
     "default_popup": "popup.html",
-    "default_title": "公号小助手"
+    "default_title": "公众号小助手"
   },
   "permissions": [
     "declarativeContent",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "storage",
+    "tabs"
   ],
   "background": {
     "service_worker": "background.js"
@@ -32,7 +34,8 @@
   "content_scripts": [
     {
       "matches": [
-        "*://mp.weixin.qq.com/*"
+        "*://mp.weixin.qq.com/*",
+        "*://api.test.com.cn/*"
       ],
       "js": [
         "content.js"

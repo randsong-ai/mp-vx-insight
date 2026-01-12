@@ -96,6 +96,56 @@ button:hover:not(.loading) {
     padding-top: 10px;
 }
 
+.apiConfig {
+    width: 100%;
+    border-top: 1px solid #e8eaec;
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.schoolConfig {
+    width: 100%;
+    border-top: 1px solid #e8eaec;
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.apiRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+#apiUrlInput {
+    flex: 1;
+    min-width: 220px;
+    padding: 8px 10px;
+    border: 1px solid #dcdfe6;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+#schoolSelect,
+#categorySelect {
+    flex: 1;
+    min-width: 220px;
+    padding: 8px 10px;
+    border: 1px solid #dcdfe6;
+    border-radius: 4px;
+    font-size: 12px;
+    background: #fff;
+}
+
+.apiHint {
+    font-size: 12px;
+    color: #808695;
+}
+
 a {
     text-decoration: none;
     color: #007bff;
