@@ -12,7 +12,7 @@ const STORAGE_KEYS = {
 function setMpAccountUI({ nickname, authorized, tip }) {
     const nameEl = document.getElementById('mpAccountName')
     const tipEl = document.getElementById('mpAccountAuthTip')
-    const section = document.getElementById('authorizedSection')
+    const section = document.getElementById('configPanel')
 
     if (nameEl) nameEl.textContent = nickname ? nickname : '（未检测）'
     if (tipEl) tipEl.textContent = tip || ''
@@ -24,6 +24,12 @@ function setMpAccountUI({ nickname, authorized, tip }) {
 function requestMpAccountStatusFromBackground() {
     return new Promise((resolve) => {
         chrome.runtime.sendMessage({ action: 'getMpAccountStatus' }, (res) => {
+            console.log('MP-VX-Insight ==> popup.js ==> getMpAccountStatus response:', res)
+            if (chrome.runtime.lastError) {
+                console.error('MP-VX-Insight ==> popup.js ==> getMpAccountStatus error:', chrome.runtime.lastError)
+                resolve({ ok: false, error: chrome.runtime.lastError.message })
+                return
+            }
             if (!res || !res.ok) {
                 resolve({ ok: false, error: (res && res.error) ? res.error : '未收到后台响应' })
                 return
@@ -71,10 +77,13 @@ function requestMpAccountInfoFromActiveTab() {
 async function enforceMpAccountAuthorization() {
     // 1) 先用后台缓存的昵称做一次判定（即使当前不在 mp.weixin.qq.com 也能工作）
     const cached = await requestMpAccountStatusFromBackground()
+    console.log('MP-VX-Insight ==> popup.js ==> cached status:', cached)
+
+    // 设置初始 UI（基于后台缓存）
     if (cached && cached.ok) {
         if (cached.authorized) {
             setMpAccountUI({
-                nickname: cached.nickname,
+                nickname: cached.nickname || '（未检测）',
                 authorized: true,
                 tip: '已授权'
             })
@@ -82,17 +91,19 @@ async function enforceMpAccountAuthorization() {
             const allowedText = (cached.allowed && cached.allowed.length) ? cached.allowed.join('、') : ''
             const t = cached.nickname
                 ? `仅支持定义的公众号：${allowedText}（当前：${cached.nickname}）`
-                : (allowedText ? `仅支持定义的公众号：${allowedText}` : '仅支持定义的公众号')
-            setMpAccountUI({ nickname: cached.nickname, authorized: false, tip: t })
+                : `仅支持定义的公众号：${allowedText || '请在微信公众号后台页面打开此插件'}`
+            setMpAccountUI({ nickname: cached.nickname || '（未检测）', authorized: false, tip: t })
         }
     } else {
         // 后台不可用时先给个默认
-        setMpAccountUI({ nickname: '', authorized: false, tip: '（检测中...）' })
+        setMpAccountUI({ nickname: '（未检测）', authorized: false, tip: '请在微信公众号后台页面使用此插件' })
     }
 
     // 2) 再尝试从当前打开的公众号后台页面实时读取昵称（更及时）
     const live = await requestMpAccountInfoFromActiveTab()
-    if (live && live.nickname) {
+    console.log('MP-VX-Insight ==> popup.js ==> live info:', live)
+
+    if (live && live.ok && live.nickname) {
         // 让后台更新缓存（content.js 同时也会更新，这里做双保险）
         chrome.runtime.sendMessage({ action: 'updateMpAccountNickname', nickname: live.nickname })
 
@@ -108,9 +119,15 @@ async function enforceMpAccountAuthorization() {
                 setMpAccountUI({ nickname: refreshed.nickname || live.nickname, authorized: false, tip: t })
             }
         } else {
-            // 兜底：按“未授权”处理
+            // 兜底：按"未授权"处理
             const t = allowedText ? `仅支持定义的公众号：${allowedText}（当前：${live.nickname}）` : '仅支持定义的公众号'
             setMpAccountUI({ nickname: live.nickname, authorized: false, tip: t })
+        }
+    } else {
+        // 如果实时检测失败（不在微信页面），但后台有缓存数据，保持后台缓存的结果
+        if (cached && cached.ok && cached.nickname) {
+            console.log('MP-VX-Insight ==> popup.js ==> using cached data, not on mp page')
+            // UI 已经在步骤 1 中设置好了，不需要更新
         }
     }
 }
@@ -127,13 +144,50 @@ function asArray(v) {
 
 function requestSchoolsFromBackground() {
     return new Promise((resolve, reject) => {
+        console.log('MP-VX-Insight ==> popup.js ==> sending fetchSchools message to background')
         chrome.runtime.sendMessage({ action: 'fetchSchools' }, (res) => {
+            console.log('MP-VX-Insight ==> popup.js ==> fetchSchools response:', res)
+            if (chrome.runtime.lastError) {
+                console.error('MP-VX-Insight ==> popup.js ==> fetchSchools lastError:', chrome.runtime.lastError)
+                reject(new Error(chrome.runtime.lastError.message))
+                return
+            }
             if (!res) {
                 reject(new Error('未收到后台响应'))
                 return
             }
             if (!res.ok) {
                 reject(new Error(res.error || '获取学校列表失败'))
+                return
+            }
+            console.log('MP-VX-Insight ==> popup.js ==> fetchSchools success, data count:', asArray(res.data).length)
+            resolve(asArray(res.data))
+        })
+    })
+}
+
+function requestCategoriesFromBackground(schoolId) {
+    return new Promise((resolve, reject) => {
+        const sid = normalizeId(schoolId)
+        if (!sid) {
+            resolve([])
+            return
+        }
+
+        console.log('MP-VX-Insight ==> popup.js ==> sending fetchCategories message to background, schoolId:', sid)
+        chrome.runtime.sendMessage({ action: 'fetchCategories', schoolId: sid }, (res) => {
+            console.log('MP-VX-Insight ==> popup.js ==> fetchCategories response:', res)
+            if (chrome.runtime.lastError) {
+                console.error('MP-VX-Insight ==> popup.js ==> fetchCategories lastError:', chrome.runtime.lastError)
+                reject(new Error(chrome.runtime.lastError.message))
+                return
+            }
+            if (!res) {
+                reject(new Error('未收到后台响应'))
+                return
+            }
+            if (!res.ok) {
+                reject(new Error(res.error || '获取栏目列表失败'))
                 return
             }
             resolve(asArray(res.data))
@@ -170,8 +224,12 @@ function getSelectedOptionText(selectEl) {
 async function loadSchoolAndCategoryUI() {
     const schoolSelect = document.getElementById('schoolSelect')
     const categorySelect = document.getElementById('categorySelect')
-    if (!schoolSelect || !categorySelect) return
+    if (!schoolSelect || !categorySelect) {
+        console.warn('MP-VX-Insight ==> schoolSelect or categorySelect not found')
+        return
+    }
 
+    console.log('MP-VX-Insight ==> loadSchoolAndCategoryUI() called')
     setStatus('加载学校列表中...')
 
     const stored = await new Promise((resolve) => {
@@ -211,22 +269,16 @@ async function loadSchoolAndCategoryUI() {
         schoolSelect.appendChild(buildOption(sid, name, sid && sid === storedSchoolId))
     }
 
-    const syncCategoryOptions = (schoolId) => {
-        const list = (() => {
-            const s = schools.find(x => normalizeId(x && x.id) === normalizeId(schoolId))
-            return asArray(s && s.list)
-        })()
-
+    const renderCategoryOptions = (list) => {
         clearSelect(categorySelect)
-        categorySelect.appendChild(buildOption('', '请选择栏目', true))
-        for (const c of list) {
+        categorySelect.appendChild(buildOption('', '请选择栏目', !storedCategoryId))
+        for (const c of asArray(list)) {
             const cid = normalizeId(c && c.id)
             const cname = (c && c.name) ? String(c.name) : cid
             const selected = cid && cid === storedCategoryId
             categorySelect.appendChild(buildOption(cid, cname, selected))
         }
-
-        // 若有已存栏目且命中，则取消“请选择栏目”的默认选中
+        // 若有已存栏目且命中，则确保选中
         if (storedCategoryId) {
             for (const opt of Array.from(categorySelect.options)) {
                 if (opt.value === storedCategoryId) {
@@ -237,8 +289,36 @@ async function loadSchoolAndCategoryUI() {
         }
     }
 
+    const loadAndRenderCategories = async (schoolId) => {
+        const sid = normalizeId(schoolId)
+        if (!sid) {
+            clearSelect(categorySelect)
+            categorySelect.appendChild(buildOption('', '（请先选择学校）', true))
+            return
+        }
+
+        clearSelect(categorySelect)
+        categorySelect.appendChild(buildOption('', '加载栏目中...', true))
+
+        // 1) 优先走接口按学校拉取栏目（确保“栏目”确实调用接口）
+        try {
+            const categories = await requestCategoriesFromBackground(sid)
+            renderCategoryOptions(categories)
+            return
+        } catch (e) {
+            console.warn('MP-VX-Insight ==> popup.js ==> fetchCategories failed, fallback to embedded list:', e)
+        }
+
+        // 2) 回退：使用学校列表里内嵌的 list（兼容老接口）
+        const embedded = (() => {
+            const s = schools.find(x => normalizeId(x && x.id) === sid)
+            return asArray(s && s.list)
+        })()
+        renderCategoryOptions(embedded)
+    }
+
     if (storedSchoolId) {
-        syncCategoryOptions(storedSchoolId)
+        await loadAndRenderCategories(storedSchoolId)
     } else {
         clearSelect(categorySelect)
         categorySelect.appendChild(buildOption('', '（请先选择学校）', true))
@@ -249,7 +329,7 @@ async function loadSchoolAndCategoryUI() {
     // 事件绑定（防止重复绑定）
     if (!schoolSelect.__mpvx_bound) {
         schoolSelect.__mpvx_bound = true
-        schoolSelect.addEventListener('change', () => {
+        schoolSelect.addEventListener('change', async () => {
             const sid = normalizeId(schoolSelect.value)
             const sname = getSelectedOptionText(schoolSelect)
 
@@ -266,8 +346,8 @@ async function loadSchoolAndCategoryUI() {
                 categorySelect.appendChild(buildOption('', '（请先选择学校）', true))
                 return
             }
-            // 重新生成栏目
-            syncCategoryOptions(sid)
+            // 重新生成栏目（走接口）
+            await loadAndRenderCategories(sid)
         })
     }
 
@@ -471,6 +551,156 @@ function registerButtonListener(btnID, func) {
     })
 }
 
+// ==================== 标签页切换功能 ====================
+
+function initTabSwitching() {
+    const tabBtns = document.querySelectorAll('.tabBtn')
+    const tabPanels = document.querySelectorAll('.tabPanel')
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabName = btn.dataset.tab
+
+            // 更新按钮状态
+            tabBtns.forEach(b => b.classList.remove('active'))
+            btn.classList.add('active')
+
+            // 更新面板显示
+            tabPanels.forEach(panel => {
+                if (panel.id === tabName + 'Panel') {
+                    panel.classList.add('active')
+                } else {
+                    panel.classList.remove('active')
+                }
+            })
+
+            // 如果切换到历史面板，加载历史数据
+            if (tabName === 'history') {
+                loadSyncHistory()
+            }
+        })
+    })
+}
+
+// ==================== 同步历史功能 ====================
+
+function loadSyncHistory() {
+    const historyList = document.getElementById('historyList')
+    const statusEl = document.getElementById('historyStatus')
+
+    if (!historyList) return
+
+    statusEl.textContent = '加载中...'
+
+    chrome.runtime.sendMessage({ action: 'getSyncHistory', limit: 50 }, (res) => {
+        if (chrome.runtime.lastError) {
+            console.error('MP-VX-Insight ==> getSyncHistory error:', chrome.runtime.lastError)
+            statusEl.textContent = '加载失败'
+            return
+        }
+
+        if (!res || !res.ok) {
+            statusEl.textContent = '加载失败'
+            return
+        }
+
+        const history = res.data || []
+        renderSyncHistory(history)
+        statusEl.textContent = `共 ${history.length} 条记录`
+    })
+}
+
+function renderSyncHistory(history) {
+    const historyList = document.getElementById('historyList')
+    if (!historyList) return
+
+    if (history.length === 0) {
+        historyList.innerHTML = '<div class="emptyHint">暂无同步历史</div>'
+        return
+    }
+
+    historyList.innerHTML = history.map(item => {
+        const date = new Date(item.timestamp)
+        const timeStr = date.toLocaleString('zh-CN', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+        })
+
+        return `
+            <div class="historyItem">
+                <div class="historyItemTitle">${escapeHtml(item.title || '无标题')}</div>
+                <div class="historyItemMeta">
+                    <span>🏫 ${escapeHtml(item.schoolName || '-')}</span>
+                    <span>📂 ${escapeHtml(item.categoryName || '-')}</span>
+                    <span class="historyItemTime">🕒 ${timeStr}</span>
+                </div>
+                <div class="historyItemActions">
+                    <button class="historyDeleteBtn" data-ts="${Number(item.timestamp || 0)}" data-url="${escapeHtml(item.url || '')}">删除</button>
+                </div>
+            </div>
+        `
+    }).join('')
+
+    // 事件委托：单条删除
+    if (!historyList.__mpvx_bound_delete) {
+        historyList.__mpvx_bound_delete = true
+        historyList.addEventListener('click', (e) => {
+            const btn = e.target && e.target.closest ? e.target.closest('.historyDeleteBtn') : null
+            if (!btn) return
+
+            const ts = Number(btn.dataset.ts || 0)
+            const url = (btn.dataset.url || '').toString()
+            if (!ts && !url) return
+
+            if (!confirm('确定要删除这条同步历史吗？')) return
+
+            chrome.runtime.sendMessage({ action: 'deleteSyncHistoryItem', timestamp: ts, url }, (res) => {
+                if (chrome.runtime.lastError) {
+                    alert('删除失败：' + chrome.runtime.lastError.message)
+                    return
+                }
+                if (!res || !res.ok) {
+                    alert('删除失败：' + ((res && res.error) ? res.error : '未知错误'))
+                    return
+                }
+                loadSyncHistory()
+            })
+        })
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div')
+    div.textContent = text
+    return div.innerHTML
+}
+
+function refreshHistory() {
+    loadSyncHistory()
+}
+
+function clearHistory() {
+    if (!confirm('确定要清空同步历史记录吗？此操作不可恢复。')) {
+        return
+    }
+
+    chrome.runtime.sendMessage({ action: 'clearSyncHistory' }, (res) => {
+        if (chrome.runtime.lastError) {
+            alert('清空失败：' + chrome.runtime.lastError.message)
+            return
+        }
+        if (!res || !res.ok) {
+            alert('清空失败：' + ((res && res.error) ? res.error : '未知错误'))
+            return
+        }
+        loadSyncHistory()
+        alert('同步历史已清空')
+    })
+}
+
 function updateCopyrightYear() {
     const currentYear = new Date().getFullYear();
     document.getElementById("copyright").innerHTML =
@@ -549,7 +779,7 @@ function initializeData() {
     })
 }
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
     console.log("MP-VX-Insight ==> Start!")
 
     // registerButtonListener("copyImageUrl", copyImageUrl)
@@ -560,11 +790,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // registerButtonListener("pickArticleContent", pickArticleContent)
     registerButtonListener("saveApiUrl", saveApiUrl)
     registerButtonListener("refreshSchools", () => loadSchoolAndCategoryUI())
+    registerButtonListener("refreshHistory", refreshHistory)
+    registerButtonListener("clearHistory", clearHistory)
 
     updateCopyrightYear()
     loadApiUrl()
-    loadSchoolAndCategoryUI()
+
+    // 先加载学校/栏目数据（无论授权状态如何都需要加载）
+    await loadSchoolAndCategoryUI()
+
     initializeData()
+    initTabSwitching()
 
     // 白名单校验：未授权则隐藏配置区
     enforceMpAccountAuthorization().catch((e) => {

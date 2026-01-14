@@ -4,7 +4,8 @@ const MPVX = {
     markerAttr: 'data-mpvx-sync-added',
     rowMarkerAttr: 'data-mpvx-sync-row-added',
     btnClass: 'mpvx-sync-btn',
-    toastId: 'mpvx-sync-toast'
+    toastId: 'mpvx-sync-toast',
+    bulkBtnId: 'mpvx-bulk-sync-btn'
 }
 
 const MPVX_AUTH = {
@@ -12,7 +13,13 @@ const MPVX_AUTH = {
     nicknameSelectors: [
         '#js_mp_sidemenu > div > div.weui-desktop-layout__side-menu__footer > div.mp_account_box > div.weui-desktop-account__info.weui-desktop-layout__side-menu__footer-item > div > span.acount_box-nickname',
         '#js_mp_sidemenu span.acount_box-nickname',
-        'span.acount_box-nickname'
+        'span.acount_box-nickname',
+        // 新增更多候选选择器
+        '.weui-desktop-account__info span',
+        '.mp_account_box span',
+        '#js_mp_sidemenu .weui-desktop-account__info',
+        '[class*="account"] [class*="nickname"]',
+        '[class*="nickname"]'
     ]
 }
 
@@ -20,13 +27,18 @@ function getMpAccountNickname() {
     for (const sel of MPVX_AUTH.nicknameSelectors) {
         const el = document.querySelector(sel)
         const name = el ? (el.textContent || '').trim() : ''
-        if (name) return name
+        if (name) {
+            console.log('MP-VX-Insight ==> Found nickname with selector:', sel, 'nickname:', name)
+            return name
+        }
     }
+    console.warn('MP-VX-Insight ==> No nickname found, tried selectors:', MPVX_AUTH.nicknameSelectors)
     return ''
 }
 
 function reportMpAccountNickname() {
     const nickname = getMpAccountNickname()
+    console.log('MP-VX-Insight ==> reportMpAccountNickname:', nickname)
     if (!nickname) return
     try {
         chrome.runtime.sendMessage({
@@ -82,6 +94,33 @@ function ensureStyles() {
             padding: 4px 10px;
             line-height: 18px;
         }
+
+        /* 已同步按钮样式 */
+        .${MPVX.btnClass}.mpvx-synced {
+            background: #909399;
+            border-color: #909399;
+        }
+
+        /* 批量同步按钮 */
+        #${MPVX.bulkBtnId} {
+            position: fixed;
+            right: 16px;
+            bottom: 110px;
+            z-index: 2147483647;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid #07c160;
+            background: #fff;
+            color: #07c160;
+            font-size: 13px;
+            cursor: pointer;
+            box-shadow: 0 6px 18px rgba(0,0,0,.12);
+        }
+
+        #${MPVX.bulkBtnId}[disabled] {
+            opacity: .6;
+            cursor: not-allowed;
+        }
     `.trim()
     document.documentElement.appendChild(style)
 }
@@ -106,7 +145,152 @@ function createSyncButton(text = '同步到网站') {
     btn.className = MPVX.btnClass
     btn.type = 'button'
     btn.textContent = text
+    btn.dataset.mpvxDefaultText = text
     return btn
+}
+
+/**
+ * 规范化 URL 用于同步状态比对（需与 background.js 的 normalizeUrlForSync 保持一致）
+ */
+function normalizeUrlForSync(url) {
+    if (!url) return ''
+    try {
+        const u = new URL(url)
+        const paramsToRemove = ['chksm', 'scene', 'share_token']
+        paramsToRemove.forEach(param => u.searchParams.delete(param))
+        return u.toString()
+    } catch (e) {
+        return url
+    }
+}
+
+function setButtonUrl(btn, url) {
+    if (!btn) return
+    btn.dataset.mpvxUrl = url || ''
+    btn.dataset.mpvxUrlKey = normalizeUrlForSync(url || '')
+}
+
+/**
+ * 检查文章 URL 是否已同步
+ */
+function checkSyncStatus(url, btn) {
+    if (!url || !btn) return
+
+    setButtonUrl(btn, url)
+
+    chrome.runtime.sendMessage({
+        action: 'isUrlSynced',
+        url
+    }, (res) => {
+        if (res && res.ok && res.synced) {
+            updateButtonAsSynced(btn)
+        } else {
+            updateButtonAsUnsynced(btn)
+        }
+    })
+}
+
+/**
+ * 将按钮更新为已同步状态
+ */
+function updateButtonAsSynced(btn) {
+    if (!btn) return
+    btn.textContent = '已同步'
+    btn.classList.add('mpvx-synced')
+    btn.disabled = true
+    btn.dataset.mpvxBusy = '0'
+}
+
+/**
+ * 将按钮更新为未同步/可用状态
+ */
+function updateButtonAsUnsynced(btn) {
+    if (!btn) return
+    if (btn.dataset.mpvxBusy === '1') return
+    btn.classList.remove('mpvx-synced')
+    btn.disabled = false
+    btn.textContent = btn.dataset.mpvxDefaultText || '同步到网站'
+}
+
+function refreshButtonsFromSyncedUrls(syncedUrls) {
+    const map = (syncedUrls && typeof syncedUrls === 'object') ? syncedUrls : {}
+    const buttons = Array.from(document.querySelectorAll(`.${MPVX.btnClass}[data-mpvx-url-key]`))
+    for (const btn of buttons) {
+        const key = (btn.dataset && btn.dataset.mpvxUrlKey) ? btn.dataset.mpvxUrlKey : ''
+        if (!key) continue
+        if (map[key]) {
+            updateButtonAsSynced(btn)
+        } else {
+            updateButtonAsUnsynced(btn)
+        }
+    }
+}
+
+function startSyncedUrlsLiveSync() {
+    if (startSyncedUrlsLiveSync.__started) return
+    startSyncedUrlsLiveSync.__started = true
+
+    try {
+        chrome.storage.local.get({ syncedUrls: {} }, (items) => {
+            refreshButtonsFromSyncedUrls(items && items.syncedUrls)
+        })
+
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName !== 'local') return
+            if (!changes || !changes.syncedUrls) return
+            refreshButtonsFromSyncedUrls(changes.syncedUrls.newValue || {})
+        })
+    } catch (e) {
+        // ignore
+    }
+}
+
+function ensureBulkSyncButton() {
+    if (document.getElementById(MPVX.bulkBtnId)) return
+    const btn = document.createElement('button')
+    btn.id = MPVX.bulkBtnId
+    btn.type = 'button'
+    btn.textContent = '批量同步本页未同步'
+    document.body.appendChild(btn)
+
+    btn.addEventListener('click', async () => {
+        const candidates = Array.from(document.querySelectorAll(`.${MPVX.btnClass}[data-mpvx-url-key]`))
+            .filter(b => b && !b.disabled && !b.classList.contains('mpvx-synced'))
+
+        if (!candidates.length) {
+            toast('本页没有可同步的文章')
+            return
+        }
+
+        btn.disabled = true
+        const total = candidates.length
+        let ok = 0
+        let fail = 0
+
+        for (let i = 0; i < candidates.length; i++) {
+            const itemBtn = candidates[i]
+            toast(`批量同步中：${i + 1}/${total}`)
+            try {
+                const payload = itemBtn.__mpvx_payload
+                const url = (itemBtn.dataset && itemBtn.dataset.mpvxUrl) ? itemBtn.dataset.mpvxUrl : ''
+                const title = (itemBtn.dataset && itemBtn.dataset.mpvxTitle) ? itemBtn.dataset.mpvxTitle : ''
+
+                const res = payload
+                    ? await syncPayload(payload, itemBtn)
+                    : await syncByUrl(url, { title }, itemBtn)
+
+                if (res && res.ok) ok++
+                else fail++
+            } catch (e) {
+                fail++
+            }
+
+            await new Promise(r => setTimeout(r, 400))
+        }
+
+        btn.disabled = false
+        toast(`批量同步完成：成功 ${ok}，失败 ${fail}`, 4000)
+    })
 }
 
 function safeMeta(selector) {
@@ -142,7 +326,27 @@ function isAppmsgPublishListPage() {
 
 function extractFromPublishRow(row) {
     const titleLink = row.querySelector('a.weui-desktop-mass-appmsg__title')
-    const title = titleLink ? (titleLink.textContent || '').trim() : ''
+
+    // 标题链接里可能包含额外 DOM（如“转载”提示、Popover 等）。
+    // 目标：只取第一个 <span> 的纯标题文本。
+    const title = (() => {
+        if (!titleLink) return ''
+
+        const span = titleLink.querySelector('span')
+        const spanText = span ? (span.textContent || '').trim() : ''
+        if (spanText) return spanText
+
+        // 兜底：取 a 下“直接文本节点”，避免深层嵌套的提示文案
+        const directText = Array.from(titleLink.childNodes || [])
+            .filter(n => n && n.nodeType === 3) // Node.TEXT_NODE
+            .map(n => (n.textContent || '').trim())
+            .filter(Boolean)
+            .join(' ')
+            .trim()
+        if (directText) return directText
+
+        return (titleLink.textContent || '').trim()
+    })()
     const href = titleLink ? (titleLink.getAttribute('href') || '').trim() : ''
     const url = href ? new URL(href, location.href).toString() : ''
 
@@ -178,7 +382,7 @@ function extractFromPublishRow(row) {
 }
 
 function decorateAppmsgPublishRows() {
-    // 注意：.publish_content.publish_record_history 往往是“整个列表容器”，不是单条记录。
+    // 注意：.publish_content.publish_record_history 往往是"整个列表容器"，不是单条记录。
     // 之前在容器上 querySelector 只会命中第一个 .weui-desktop-mass-media__data-list，导致只给第一条加按钮。
     const dataLists = Array.from(document.querySelectorAll('.weui-desktop-mass-media__data-list'))
     for (const dataList of dataLists) {
@@ -193,16 +397,26 @@ function decorateAppmsgPublishRows() {
         const titleLink = row.querySelector('a.weui-desktop-mass-appmsg__title')
         if (!titleLink) continue
 
+        const payload = extractFromPublishRow(row)
         const btnRow = document.createElement('div')
         btnRow.className = 'mpvx-sync-row'
         const btn = createSyncButton('同步到网站')
         btn.dataset.mpvxScope = 'appmsgpublish-list'
 
+        // 为实时联动/批量同步保存关键信息
+        setButtonUrl(btn, payload.url)
+        btn.dataset.mpvxTitle = payload.title || ''
+        btn.__mpvx_payload = payload
+
+        // 检查同步状态
+        if (payload.url) {
+            checkSyncStatus(payload.url, btn)
+        }
+
         btn.addEventListener('click', (e) => {
             e.preventDefault()
             e.stopPropagation()
 
-            const payload = extractFromPublishRow(row)
             if (!payload.url) {
                 toast('未检测到文章链接，无法同步')
                 return
@@ -218,6 +432,7 @@ function decorateAppmsgPublishRows() {
 
 function initAppmsgPublishListButtons() {
     decorateAppmsgPublishRows()
+    ensureBulkSyncButton()
     const mo = new MutationObserver(() => decorateAppmsgPublishRows())
     mo.observe(document.documentElement || document.body, { childList: true, subtree: true })
 }
@@ -246,84 +461,102 @@ function extractArticleFromPage() {
 
 function syncPayload(payload, btn) {
     btn.disabled = true
+    btn.dataset.mpvxBusy = '1'
     const oldText = btn.textContent
     btn.textContent = '同步中...'
 
     const mp_account_nickname = getMpAccountNickname()
 
-    chrome.runtime.sendMessage({
-        action: 'syncArticle',
-        payload: {
-            ...(payload && typeof payload === 'object' ? payload : {}),
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+            action: 'syncArticle',
+            payload: {
+                ...(payload && typeof payload === 'object' ? payload : {}),
+                mp_account_nickname
+            },
             mp_account_nickname
-        },
-        mp_account_nickname
-    }, (res) => {
-        btn.disabled = false
-        btn.textContent = oldText
+        }, (res) => {
+            btn.disabled = false
+            btn.textContent = oldText
+            btn.dataset.mpvxBusy = '0'
 
-        if (chrome.runtime.lastError) {
-            toast('同步失败：' + chrome.runtime.lastError.message)
-            return
-        }
-
-        console.log('MP-VX-Insight ==> syncArticle response ->', res)
-
-        if (!res) {
-            toast('同步失败：未收到后台响应（请检查扩展是否已启用）')
-            return
-        }
-        if (res.ok) {
-            if (res.posted === false) {
-                toast('同步成功（但后台未标记已发起接口，请确认已重载扩展）')
-            } else {
-                toast('同步成功')
+            if (chrome.runtime.lastError) {
+                toast('同步失败：' + chrome.runtime.lastError.message)
+                resolve({ ok: false, error: chrome.runtime.lastError.message })
+                return
             }
-        } else {
-            toast('同步失败：' + (res.error || '未知错误'))
-        }
+
+            console.log('MP-VX-Insight ==> syncArticle response ->', res)
+
+            if (!res) {
+                toast('同步失败：未收到后台响应（请检查扩展是否已启用）')
+                resolve({ ok: false, error: 'no_response' })
+                return
+            }
+            if (res.ok) {
+                if (res.posted === false) {
+                    toast('同步成功（但后台未标记已发起接口，请确认已重载扩展）')
+                } else {
+                    toast('同步成功')
+                    // 同步成功后更新按钮状态
+                    updateButtonAsSynced(btn)
+                }
+            } else {
+                toast('同步失败：' + (res.error || '未知错误'))
+            }
+            resolve(res)
+        })
     })
 }
 
 function syncByUrl(url, hints, btn) {
     btn.disabled = true
+    btn.dataset.mpvxBusy = '1'
     const oldText = btn.textContent
     btn.textContent = '采集中...'
 
     const mp_account_nickname = getMpAccountNickname()
 
-    chrome.runtime.sendMessage({
-        action: 'syncByUrl',
-        url,
-        hints: {
-            ...(hints && typeof hints === 'object' ? hints : {}),
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+            action: 'syncByUrl',
+            url,
+            hints: {
+                ...(hints && typeof hints === 'object' ? hints : {}),
+                mp_account_nickname
+            },
             mp_account_nickname
-        },
-        mp_account_nickname
-    }, (res) => {
-        btn.disabled = false
-        btn.textContent = oldText
+        }, (res) => {
+            btn.disabled = false
+            btn.textContent = oldText
+            btn.dataset.mpvxBusy = '0'
 
-        if (chrome.runtime.lastError) {
-            toast('同步失败：' + chrome.runtime.lastError.message)
-            return
-        }
-
-        console.log('MP-VX-Insight ==> syncByUrl response ->', res)
-
-        if (!res) {
-            toast('同步失败：未收到后台响应')
-            return
-        }
-        if (res.ok) {
-            if (res.posted === false) {
-                toast('同步成功（但后台未标记已发起接口，请确认已重载扩展）')
-            } else {
-                toast('同步成功')
+            if (chrome.runtime.lastError) {
+                toast('同步失败：' + chrome.runtime.lastError.message)
+                resolve({ ok: false, error: chrome.runtime.lastError.message })
+                return
             }
-        } else {
-            toast('同步失败：' + (res.error || '未知错误'))
-        }
+
+            console.log('MP-VX-Insight ==> syncByUrl response ->', res)
+
+            if (!res) {
+                toast('同步失败：未收到后台响应')
+                resolve({ ok: false, error: 'no_response' })
+                return
+            }
+            if (res.ok) {
+                if (res.posted === false) {
+                    toast('同步成功（但后台未标记已发起接口，请确认已重载扩展）')
+                } else {
+                    toast('同步成功')
+                    // 同步成功后更新按钮状态
+                    updateButtonAsSynced(btn)
+                }
+            } else {
+                toast('同步失败：' + (res.error || '未知错误'))
+            }
+            resolve(res)
+        })
     })
 }
 
@@ -333,6 +566,11 @@ function initArticlePageButton() {
 
     const btn = createSyncButton('同步到网站')
     btn.dataset.mpvxScope = 'article'
+
+    // 检查同步状态
+    const currentUrl = location.href
+    checkSyncStatus(currentUrl, btn)
+
     btn.addEventListener('click', () => {
         const payload = extractArticleFromPage()
         if (!payload.url) {
@@ -376,13 +614,20 @@ function decorateArticleLinks() {
         if (a.getAttribute(MPVX.markerAttr) === '1') continue
         a.setAttribute(MPVX.markerAttr, '1')
 
+        const url = new URL(href, location.href).toString()
         const btn = createSyncButton('同步到网站')
         btn.dataset.mpvxScope = 'list'
+
+        setButtonUrl(btn, url)
+        btn.dataset.mpvxTitle = (a.textContent || '').trim()
+
+        // 检查同步状态
+        checkSyncStatus(url, btn)
+
         btn.addEventListener('click', (e) => {
             e.preventDefault()
             e.stopPropagation()
 
-            const url = new URL(href, location.href).toString()
             const title = (a.textContent || '').trim()
             syncByUrl(url, { title }, btn)
         })
@@ -396,12 +641,14 @@ function decorateArticleLinks() {
 
 function initListPageButtons() {
     decorateArticleLinks()
+    ensureBulkSyncButton()
     const mo = new MutationObserver(() => decorateArticleLinks())
     mo.observe(document.documentElement || document.body, { childList: true, subtree: true })
 }
 
 function initSyncButtons() {
     ensureStyles()
+    startSyncedUrlsLiveSync()
     // 尝试上报当前登录公众号（如果页面能拿到）
     reportMpAccountNickname()
     const path = location.pathname || ''
@@ -425,20 +672,70 @@ function initSyncButtons() {
     }
 }
 
+/**
+ * 处理快捷键触发的同步
+ */
+function handleShortcutSync() {
+    const path = location.pathname || ''
+
+    // 文章详情页：直接同步
+    if (path.startsWith('/s') || path.startsWith('/s/')) {
+        const btn = document.querySelector(`.${MPVX.btnClass}[data-mpvx-scope="article"]`)
+        if (btn && !btn.disabled) {
+            btn.click()
+            toast('已触发快捷键同步')
+        } else {
+            toast('无法同步：按钮未就绪或已同步')
+        }
+        return
+    }
+
+    // 其他页面：提示用户使用点击按钮
+    toast('快捷键同步仅支持文章详情页，请点击按钮同步')
+}
+
 try {
     initSyncButtons()
 } catch (e) {
     console.warn('MP-VX-Insight ==> initSyncButtons error:', e)
 }
 
-// 再延迟上报一次，避免昵称区域晚渲染
-setTimeout(() => {
-    try {
-        reportMpAccountNickname()
-    } catch (e) {
-        // ignore
+// 多次延迟上报，避免昵称区域晚渲染
+const delays = [500, 1200, 2500, 5000]
+delays.forEach(delay => {
+    setTimeout(() => {
+        try {
+            reportMpAccountNickname()
+        } catch (e) {
+            // ignore
+        }
+    }, delay)
+})
+
+// 使用 MutationObserver 监听侧边栏加载
+const observeMpSidebar = () => {
+    const sidebar = document.querySelector('#js_mp_sidemenu')
+    if (!sidebar) {
+        // 如果侧边栏还没加载，稍后重试
+        setTimeout(observeMpSidebar, 1000)
+        return
     }
-}, 1200)
+
+    const observer = new MutationObserver(() => {
+        reportMpAccountNickname()
+    })
+
+    observer.observe(sidebar, {
+        childList: true,
+        subtree: true
+    })
+
+    // 10 秒后停止观察
+    setTimeout(() => observer.disconnect(), 10000)
+}
+
+// 延迟启动观察器
+setTimeout(observeMpSidebar, 2000)
 
 function getContent() {
     const safeContent = (v) => {
@@ -462,6 +759,13 @@ function getContent() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("MP-VX-Insight ==> content.js ==> receive from popup2content msg -> ", message)
+
+    // 快捷键触发同步
+    if (message && message.action === 'triggerSyncByShortcut') {
+        handleShortcutSync()
+        sendResponse({ ok: true })
+        return true
+    }
 
     // 方案A：getAccountInfo 只走 sendResponse（点对点回包），不再广播消息，避免 popup 循环触发。
     if (message && message.action === 'getAccountInfo') {

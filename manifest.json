@@ -28,6 +28,15 @@
   "background": {
     "service_worker": "background.js"
   },
+  "commands": {
+    "sync-article": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "同步当前文章"
+    }
+  },
   "host_permissions": [
     "<all_urls>"
   ],

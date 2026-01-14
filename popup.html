@@ -49,7 +49,14 @@
             </div>
         </div>
 
-        <div id="authorizedSection">
+        <!-- 标签页切换 -->
+        <div class="tabContainer">
+            <button class="tabBtn active" data-tab="config">配置</button>
+            <button class="tabBtn" data-tab="history">同步历史</button>
+        </div>
+
+        <!-- 配置面板 -->
+        <div id="configPanel" class="tabPanel active">
 
         <div class="schoolConfig">
             <div class="apiRow">
@@ -77,6 +84,20 @@
             </div>
         </div>
 
+        </div>
+
+        <!-- 同步历史面板 -->
+        <div id="historyPanel" class="tabPanel">
+            <div class="historyContainer">
+                <div class="apiRow">
+                    <button id="refreshHistory">刷新历史</button>
+                    <button id="clearHistory">清空历史</button>
+                    <span class="apiHint" id="historyStatus"></span>
+                </div>
+                <div class="historyList" id="historyList">
+                    <div class="emptyHint">暂无同步历史</div>
+                </div>
+            </div>
         </div>
 
         <div class="footer">
